@@ -4,7 +4,9 @@ use log::*;
 use screeps::{find, prelude::*, Part, ResourceType, ReturnCode, RoomObjectProperties};
 use stdweb::js;
 
+mod graph;
 mod logging;
+mod planner;
 
 fn main() {
     logging::setup_logging(logging::Info);
@@ -33,6 +35,7 @@ fn main() {
 
 fn game_loop() {
     debug!("loop starting! CPU: {}", screeps::game::cpu::get_used());
+    planner::plan_walls(&screeps::game::rooms::values()[0]);
 
     debug!("running spawns");
     for spawn in screeps::game::spawns::values() {
