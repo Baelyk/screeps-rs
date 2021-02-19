@@ -92,6 +92,14 @@ impl<
 where
     std::vec::Vec<NodeName>: std::iter::FromIterator<NodeName>,
 {
+    pub fn source(&self) -> NodeName {
+        self.source
+    }
+
+    pub fn sink(&self) -> NodeName {
+        self.sink
+    }
+
     pub fn new(source: NodeName, sink: NodeName) -> Self {
         let mut nodes = HashMap::new();
         nodes.insert(source, Node::new(source));
@@ -477,6 +485,16 @@ where
         }
 
         return distances;
+    }
+
+    pub fn get_all_edges(&self) -> Vec<(NodeName, NodeName)> {
+        let mut edges = Vec::new();
+        for (from, edges_from) in self.edges.iter() {
+            for (to, _) in edges_from.iter() {
+                edges.push((*from, *to));
+            }
+        }
+        edges
     }
 }
 

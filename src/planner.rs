@@ -3,35 +3,7 @@ use log::*;
 use screeps::objects::Room;
 
 pub fn plan_walls(room: &Room) {
-    let protected = rectangle_of_pos_indices(50 * 0 + 0, 50 * 23 + 34);
-    let exits = room.find(screeps::constants::find::EXIT);
-    let sinks: Vec<usize> = exits
-        .iter()
-        .map(|position| (position.y() * 50 + position.x()) as usize)
-        .collect();
-    let graph = terrain_to_graph(room, &protected, &sinks);
-    let room_mem = room.memory();
-    let wall_spots = match room_mem.get::<Vec<usize>>("wall_spots").unwrap() {
-        None => {
-            let protected = rectangle_of_pos_indices(50 * 0 + 0, 50 * 23 + 34);
-            let exits = room.find(screeps::constants::find::EXIT);
-            let sinks: Vec<usize> = exits
-                .iter()
-                .map(|position| (position.y() * 50 + position.x()) as usize)
-                .collect();
-            let (_, residual_graph) = graph.max_flow();
-            let wall_spots = residual_graph.min_cut_boundary_nodes(&protected[0]);
-            room_mem.set(
-                "wall_spots",
-                wall_spots
-                    .iter()
-                    .map(|spot| *spot as u32)
-                    .collect::<Vec<u32>>(),
-            );
-            wall_spots
-        }
-        Some(wall_spots) => wall_spots,
-    };
+    let graph = load_or_get_graph(room);
     /*
     let room_visual = room.visual();
     let mut style: screeps::objects::CircleStyle = Default::default();
@@ -115,7 +87,15 @@ fn terrain_to_graph(room: &Room, sources: &Vec<usize>, sinks: &Vec<usize>) -> Gr
     return graph;
 }
 
-fn get_graph_and_save(room: Room, protected: &Vec<usize>) -> Graph<usize> {
+fn load_or_get_graph(room: &Room) -> Graph<usize> {
+    let protected = rectangle_of_pos_indices(50 * 0 + 0, 50 * 23 + 34);
+    match load_graph(room) {
+        None => get_graph_and_save(room, &protected),
+        Some(graph) => graph,
+    }
+}
+
+fn get_graph_and_save(room: &Room, protected: &Vec<usize>) -> Graph<usize> {
     // Get the exists in the room
     let exits = room.find(screeps::constants::find::EXIT);
     let sinks: Vec<usize> = exits
@@ -126,16 +106,40 @@ fn get_graph_and_save(room: Room, protected: &Vec<usize>) -> Graph<usize> {
     let graph = terrain_to_graph(room, protected, &sinks);
 
     // Save the graph to room memory
-    let room_mem = room.memory();
-    room_mem.set(
-        "graph",
-        wall_spots
-            .iter()
-            .map(|spot| *spot as u32)
-            .collect::<Vec<u32>>(),
-    );
+    save_graph(room, &graph);
 
     graph
+}
+
+fn save_graph(room: &Room, graph: &Graph<usize>) {
+    let room_mem = room.memory();
+    let source_sink = vec![(graph.source(), graph.sink())];
+    let graph_vec = source_sink
+        .iter()
+        .chain(graph.get_all_edges().iter())
+        .map(|(from, to)| vec![*from as u32, *to as u32])
+        .collect::<Vec<Vec<u32>>>();
+    room_mem.set("graph", graph_vec);
+}
+
+fn load_graph(room: &Room) -> Option<Graph<usize>> {
+    match room.memory().get::<Vec<Vec<usize>>>("graph").unwrap() {
+        None => return None,
+        Some(edges_memory) => {
+            let mut edges: Vec<(usize, usize)> =
+                edges_memory.iter().map(|edge| (edge[0], edge[1])).collect();
+            let (source, sink) = edges.remove(0);
+            let mut graph = Graph::new(source, sink);
+            for (from, to) in edges {
+                // add_node won't add duplicate nodes
+                graph.add_node(&from);
+                graph.add_node(&to);
+                // Add edge from -> to with capacity 1 and flow 0
+                graph.add_edge(&from, &to, 1, 0);
+            }
+            Some(graph)
+        }
+    }
 }
 
 fn rectangle_of_pos_indices(top_left: usize, bottom_right: usize) -> Vec<usize> {
