@@ -6,9 +6,11 @@ edition = "2018"
 
 [dependencies]
 stdweb = "0.4"
+stdweb-derive = "0.5"
 log = "0.4"
 fern = "0.6"
 screeps-game-api = "0.8"
+serde = {version = "1", features = ["derive"]}
 
 [profile.release]
 panic = "abort"

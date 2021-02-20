@@ -3,6 +3,7 @@ use log::*;
 use screeps::objects::Room;
 
 pub fn plan_walls(room: &Room) {
+    info!("Planning walls");
     let graph = load_or_get_graph(room);
     /*
     let room_visual = room.visual();
@@ -15,16 +16,16 @@ pub fn plan_walls(room: &Room) {
         room_visual.circle(x as f32, y as f32, Some(style.clone()));
     });
     */
-    show_distance_transform(room, &graph);
+    // show_distance_transform(room, &graph);
 }
 
-fn terrain_to_graph(room: &Room, sources: &Vec<usize>, sinks: &Vec<usize>) -> Graph<usize> {
+fn terrain_to_graph(room: &Room, sources: &Vec<u32>, sinks: &Vec<u32>) -> Graph<u32> {
     let mut tiles = Vec::new();
     let terrain = room.get_terrain().get_raw_buffer();
     for (i, tile_type) in terrain.iter().enumerate() {
         // tile is a wall if tile_type & TERRAIN_MASK_WALL is 1u8
         if !(tile_type & screeps::constants::TERRAIN_MASK_WALL == 1) {
-            tiles.push(i);
+            tiles.push(i as u32);
         }
     }
     let source = sources[0];
@@ -87,21 +88,26 @@ fn terrain_to_graph(room: &Room, sources: &Vec<usize>, sinks: &Vec<usize>) -> Gr
     return graph;
 }
 
-fn load_or_get_graph(room: &Room) -> Graph<usize> {
-    let protected = rectangle_of_pos_indices(50 * 0 + 0, 50 * 23 + 34);
+fn load_or_get_graph(room: &Room) -> Graph<u32> {
+    let protected = vec![18 + 12 * 50];
     match load_graph(room) {
         None => get_graph_and_save(room, &protected),
         Some(graph) => graph,
     }
 }
 
-fn get_graph_and_save(room: &Room, protected: &Vec<usize>) -> Graph<usize> {
+fn get_graph_and_save(room: &Room, protected: &Vec<u32>) -> Graph<u32> {
+    info!("Creating graph");
     // Get the exists in the room
-    let exits = room.find(screeps::constants::find::EXIT);
-    let sinks: Vec<usize> = exits
+    let mut sinks = Vec::new();
+    room.find(screeps::constants::find::EXIT)
         .iter()
-        .map(|position| (position.y() * 50 + position.x()) as usize)
-        .collect();
+        .map(|position| (position.y() * 50 + position.x()) as u32)
+        .for_each(|exit| {
+            surrounding_pos_indices(exit)
+                .iter()
+                .for_each(|position| sinks.push(*position))
+        });
     // Create the graph
     let graph = terrain_to_graph(room, protected, &sinks);
 
@@ -111,41 +117,61 @@ fn get_graph_and_save(room: &Room, protected: &Vec<usize>) -> Graph<usize> {
     graph
 }
 
-fn save_graph(room: &Room, graph: &Graph<usize>) {
-    let room_mem = room.memory();
-    let source_sink = vec![(graph.source(), graph.sink())];
-    let graph_vec = source_sink
-        .iter()
-        .chain(graph.get_all_edges().iter())
-        .map(|(from, to)| vec![*from as u32, *to as u32])
-        .collect::<Vec<Vec<u32>>>();
-    room_mem.set("graph", graph_vec);
+fn save_graph(room: &Room, graph: &Graph<u32>) {
+    let room_mem = room.memory(); /*
+                                  let source_sink = vec![(graph.source(), graph.sink())];
+                                  let graph_vec = source_sink
+                                      .iter()
+                                      .chain(graph.get_all_edges().iter())
+                                      .map(|(from, to)| vec![*from as u32, *to as u32])
+                                      .collect::<Vec<Vec<u32>>>();*/
+    room_mem.set("graph", graph);
 }
 
-fn load_graph(room: &Room) -> Option<Graph<usize>> {
-    match room.memory().get::<Vec<Vec<usize>>>("graph").unwrap() {
-        None => return None,
-        Some(edges_memory) => {
-            let mut edges: Vec<(usize, usize)> =
-                edges_memory.iter().map(|edge| (edge[0], edge[1])).collect();
-            let (source, sink) = edges.remove(0);
-            let mut graph = Graph::new(source, sink);
-            for (from, to) in edges {
-                // add_node won't add duplicate nodes
-                graph.add_node(&from);
-                graph.add_node(&to);
-                // Add edge from -> to with capacity 1 and flow 0
-                graph.add_edge(&from, &to, 1, 0);
+fn load_graph(room: &Room) -> Option<Graph<u32>> {
+    info!("Loading graph...");
+    let room_mem = room.memory();
+    info!("room_mem");
+    let get_graph = room_mem.get::<Graph<u32>>("graph");
+    info!("got get_graph");
+    match get_graph {
+        Ok(graph_option) => {
+            info!("Okay");
+            match graph_option {
+                None => return None,
+                Some(graph) => {
+                    info!("Somewhat loaded graph");
+                    /*
+                    let mut edges: Vec<(usize, usize)> =
+                        edges_memory.iter().map(|edge| (edge[0], edge[1])).collect();
+                    let (source, sink) = edges.remove(0);
+                    let mut graph = Graph::new(source, sink);
+                    for (from, to) in edges {
+                        // add_node won't add duplicate nodes
+                        graph.add_node(&from);
+                        graph.add_node(&to);
+                        // Add edge from -> to with capacity 1 and flow 0
+                        graph.add_edge(&from, &to, 1, 0);
+                    }*/
+                    Some(graph)
+                }
             }
-            Some(graph)
+        }
+        Err(error) => {
+            info!("Err");
+            info!("{:?}", error);
+            None
         }
     }
 }
 
-fn rectangle_of_pos_indices(top_left: usize, bottom_right: usize) -> Vec<usize> {
+fn rectangle_of_pos_indices(top_left: u32, bottom_right: u32) -> Vec<u32> {
     let mut positions = Vec::new();
 
     for y in top_left.div_euclid(50)..=bottom_right.div_euclid(50) {
+        if y > 49 {
+            break;
+        }
         for x in (top_left % 50)..=(bottom_right % 50) {
             positions.push(50 * y + x);
         }
@@ -154,23 +180,31 @@ fn rectangle_of_pos_indices(top_left: usize, bottom_right: usize) -> Vec<usize> 
     positions
 }
 
-fn surrounding_pos_indices(index: usize) -> Vec<usize> {
+fn surrounding_pos_indices(index: u32) -> Vec<u32> {
     // 51 = 50 * 1 + 1
-    return rectangle_of_pos_indices(index - 51, index + 51);
+    let mut x_minus = 1;
+    let mut x_plus = 1;
+    if index % 50 == 0 {
+        x_minus = 0;
+    } else if index % 50 == 49 {
+        x_plus = 0;
+    }
+    return rectangle_of_pos_indices(index - 50 - x_minus, index + 50 + x_plus);
 }
 
-fn get_distance_transform(graph: &Graph<usize>) -> Vec<usize> {
+fn get_distance_transform(graph: &Graph<u32>) -> Vec<u32> {
     let boundaries = graph.get_nodes_with_edges_less_than(8);
     let distance_map = graph.distance_transform(&boundaries);
     let mut distances = Vec::new();
-    distances.resize(distance_map.len(), usize::MAX);
+    // 2500 = 50*50 which is the room size
+    distances.resize(2500, u32::MAX);
     distance_map.iter().for_each(|(name, distance)| {
-        distances[*name] = *distance;
+        distances[*name as usize] = *distance as u32;
     });
     distances
 }
 
-fn save_distance_transform(room: &Room, distances: &Vec<usize>) {
+fn save_distance_transform(room: &Room, distances: &Vec<u32>) {
     room.memory().set(
         "distance_transform",
         distances
@@ -180,15 +214,14 @@ fn save_distance_transform(room: &Room, distances: &Vec<usize>) {
     );
 }
 
-fn load_distance_transform(room: &Room) -> Option<Vec<usize>> {
-    room.memory()
-        .get::<Vec<usize>>("distance_transform")
-        .unwrap()
+fn load_distance_transform(room: &Room) -> Option<Vec<u32>> {
+    room.memory().get::<Vec<u32>>("distance_transform").unwrap()
 }
 
-fn show_distance_transform(room: &Room, graph: &Graph<usize>) {
+fn show_distance_transform(room: &Room, graph: &Graph<u32>) {
     let distance_transform = match load_distance_transform(room) {
         None => {
+            info!("Creating distance transform");
             let distance_transform = get_distance_transform(graph);
             save_distance_transform(room, &distance_transform);
             distance_transform
@@ -197,18 +230,28 @@ fn show_distance_transform(room: &Room, graph: &Graph<usize>) {
     };
     let room_visual = room.visual();
     let mut style: screeps::objects::TextStyle = Default::default();
+    let colors = [
+        "#ff0000", "#00ff00", "#a0a0ff", "#ffff00", "#00ffff", "#ff00ff",
+    ];
 
+    /*
     distance_transform
         .iter()
         .enumerate()
         .for_each(|(i, distance)| {
-            let x = i % 50;
-            let y = i.div_euclid(50);
-            room_visual.text(
-                x as f32,
-                y as f32,
-                String::from(format!("{}", distance)),
-                Some(style.clone()),
-            );
-        });
+            if *distance < 50 {
+                let mut style = style.clone();
+                if *distance < colors.len() {
+                    style = style.color(colors[*distance]);
+                }
+                let x = i % 50;
+                let y = i.div_euclid(50);
+                room_visual.text(
+                    x as f32,
+                    y as f32,
+                    String::from(format!("{}", distance)),
+                    Some(style),
+                );
+            }
+        });*/
 }

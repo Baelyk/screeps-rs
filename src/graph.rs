@@ -1,11 +1,16 @@
+use screeps::traits::{TryFrom, TryInto};
+use screeps::ConversionError;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::iter::FromIterator;
+use stdweb::Reference;
+use stdweb::Value;
 
 pub fn main() {}
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Node<NodeName> {
     name: NodeName,
     height: i32,
@@ -42,7 +47,7 @@ impl<NodeName: std::marker::Copy> Node<NodeName> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Edge<NodeName> {
     to: NodeName,
     from: NodeName,
@@ -76,8 +81,11 @@ impl<NodeName> Edge<NodeName> {
     }
 }
 
-#[derive(Clone)]
-pub struct Graph<NodeName> {
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Graph<NodeName>
+where
+    NodeName: std::cmp::Eq + std::hash::Hash,
+{
     // nodes[1] = Node 1
     nodes: HashMap<NodeName, Node<NodeName>>,
     // edges[from][to] = from -> to
@@ -85,6 +93,27 @@ pub struct Graph<NodeName> {
     sink: NodeName,
     source: NodeName,
 }
+
+// Graph<usize> is what I actually end up using
+type ScreepsGraph = Graph<u32>;
+
+js_serializable!(ScreepsGraph);
+js_deserializable!(ScreepsGraph);
+
+/*
+impl<NodeName: Serialize + std::cmp::Eq + std::hash::Hash> Serialize for Graph<NodeName> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("Graph", 4)?;
+        state.serialize_field("nodes", &self.nodes)?;
+        state.serialize_field("edges", &self.edges)?;
+        state.serialize_field("sink", &self.sink)?;
+        state.serialize_field("source", &self.source)?;
+        state.end()
+    }
+}*/
 
 impl<
         NodeName: std::hash::Hash + std::cmp::Eq + std::fmt::Display + std::marker::Copy + std::clone::Clone,
@@ -153,7 +182,7 @@ where
     }
 
     pub fn add_edge(&mut self, from: &NodeName, to: &NodeName, capacity: i32, flow: i32) {
-        if self.contains_edge(&from, &to) {
+        if self.contains_edge(&from, &to) || from == to {
             return;
         }
 
@@ -453,33 +482,43 @@ where
     pub fn distance_transform(&self, boundaries: &Vec<&NodeName>) -> HashMap<NodeName, usize> {
         // First In First Out queue
         let mut queue = VecDeque::new();
-        boundaries.iter().for_each(|node| queue.push_back(**node));
         // Set of discovered nodes
         let mut discovered = HashSet::new();
+
+        boundaries.iter().for_each(|node| {
+            queue.push_back(**node);
+            discovered.insert(**node);
+        });
 
         let mut distance = 0;
         let mut distances: HashMap<NodeName, usize> = HashMap::new();
 
-        // The number of nodes with the previous distance
-        let mut previous_class_size = queue.len();
         // The number of nodes with this distance
+        let mut previous_class_size = queue.len();
+        // The number of nodes *added* with this distance
         let mut current_class_size = 0;
 
         // BFS starting with boundary nodes
         while !queue.is_empty() {
             if current_class_size == previous_class_size {
-                previous_class_size = current_class_size;
+                // All the nodes currently in the queue are connected to nodes of the previous
+                // distance, so the class size of the next distance should be the queue length
+                previous_class_size = queue.len();
                 current_class_size = 0;
                 distance += 1;
             }
             let node = queue.pop_front().expect("Queue unexpectedly empty");
+            // Add this nodes distance
+            if !distances.contains_key(&node) {
+                distances.insert(node, distance);
+                current_class_size += 1;
+            }
+            // Add this nodes adjcacent nodes to the queue
             let adjacent_nodes = self.get_adjacent_nodes(&node);
             adjacent_nodes.iter().for_each(|adjacent| {
-                if !discovered.contains(adjacent) && self.residual_capacity(&node, adjacent) > 0 {
+                if !discovered.contains(adjacent) {
                     discovered.insert(*adjacent);
                     queue.push_back(*adjacent);
-                    distances.insert(*adjacent, distance);
-                    current_class_size += 1;
                 }
             });
         }
