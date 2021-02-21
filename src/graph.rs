@@ -1,469 +1,242 @@
-use screeps::traits::{TryFrom, TryInto};
-use screeps::ConversionError;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::iter::FromIterator;
-use stdweb::Reference;
-use stdweb::Value;
 
-pub fn main() {}
+const ROOM_SIZE: usize = 2500;
+/// The Node is the index of a tile, which is x + y * 50
+pub type Node = u16;
+type FlowCapacityValue = i8;
+type Capacity = [[FlowCapacityValue; ROOM_SIZE]; ROOM_SIZE];
+type Flow = [[FlowCapacityValue; ROOM_SIZE]; ROOM_SIZE];
+type Excess = [FlowCapacityValue; ROOM_SIZE];
+type HeightValue = u16;
+type Height = [HeightValue; ROOM_SIZE];
+pub type DistanceTransform = [u8; ROOM_SIZE];
 
-#[derive(Clone, Serialize, Deserialize)]
-struct Node<NodeName> {
-    name: NodeName,
-    height: i32,
-    excess: i32,
+#[derive(Serialize, Deserialize)]
+pub struct ScreepsGraph {
+    /// Tiles making up the source
+    sources: Vec<Node>,
+    /// Tiles making up the sink
+    sinks: Vec<Node>,
+    /// Tiles *not* part of the graph, i.e. walls
+    walls: Vec<Node>,
 }
-
-impl<NodeName: std::marker::Copy> Node<NodeName> {
-    fn new(name: NodeName) -> Node<NodeName> {
-        Node {
-            name,
-            height: 0,
-            excess: 0,
-        }
-    }
-
-    fn name(&self) -> NodeName {
-        self.name
-    }
-
-    fn height(&self) -> i32 {
-        self.height
-    }
-
-    fn set_height(&mut self, height: i32) {
-        self.height = height;
-    }
-
-    fn excess(&self) -> i32 {
-        self.excess
-    }
-
-    fn set_excess(&mut self, excess: i32) {
-        self.excess = excess;
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct Edge<NodeName> {
-    to: NodeName,
-    from: NodeName,
-    flow: i32,
-    capacity: i32,
-}
-
-impl<NodeName> Edge<NodeName> {
-    fn to(&self) -> &NodeName {
-        &self.to
-    }
-
-    fn from(&self) -> &NodeName {
-        &self.from
-    }
-
-    fn flow(&self) -> i32 {
-        self.flow
-    }
-
-    fn set_flow(&mut self, flow: i32) {
-        self.flow = flow;
-    }
-
-    fn capacity(&self) -> i32 {
-        self.capacity
-    }
-
-    fn set_capacity(&mut self, capacity: i32) {
-        self.capacity = capacity;
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Graph<NodeName>
-where
-    NodeName: std::cmp::Eq + std::hash::Hash,
-{
-    // nodes[1] = Node 1
-    nodes: HashMap<NodeName, Node<NodeName>>,
-    // edges[from][to] = from -> to
-    edges: HashMap<NodeName, HashMap<NodeName, Edge<NodeName>>>,
-    sink: NodeName,
-    source: NodeName,
-}
-
-// Graph<usize> is what I actually end up using
-type ScreepsGraph = Graph<u32>;
-
 js_serializable!(ScreepsGraph);
 js_deserializable!(ScreepsGraph);
 
-/*
-impl<NodeName: Serialize + std::cmp::Eq + std::hash::Hash> Serialize for Graph<NodeName> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state = serializer.serialize_struct("Graph", 4)?;
-        state.serialize_field("nodes", &self.nodes)?;
-        state.serialize_field("edges", &self.edges)?;
-        state.serialize_field("sink", &self.sink)?;
-        state.serialize_field("source", &self.source)?;
-        state.end()
-    }
-}*/
-
-impl<
-        NodeName: std::hash::Hash + std::cmp::Eq + std::fmt::Display + std::marker::Copy + std::clone::Clone,
-    > Graph<NodeName>
-where
-    std::vec::Vec<NodeName>: std::iter::FromIterator<NodeName>,
-{
-    pub fn source(&self) -> NodeName {
-        self.source
-    }
-
-    pub fn sink(&self) -> NodeName {
-        self.sink
-    }
-
-    pub fn new(source: NodeName, sink: NodeName) -> Self {
-        let mut nodes = HashMap::new();
-        nodes.insert(source, Node::new(source));
-        nodes.insert(sink, Node::new(sink));
-        Graph {
-            nodes,
-            edges: HashMap::new(),
-            sink,
-            source,
-        }
-    }
-
-    /*
-    fn duplicate(original: Graph) -> Graph {
-        let copy = Graph::new(original.source, original.sink);
-        for (_, node) in original.nodes.iter() {
-            copy.add_node(*node.clone());
-        }
-        for (from, edges_from) in original.edges.iter() {
-            for (to, edge) in edges_from.iter() {
-                copy.add_edge(*from, *to, edge.capacity, edge.flow);
-            }
-        }
-
-        copy
-    }*/
-
-    pub fn contains_node(&self, node: &NodeName) -> bool {
-        self.nodes.contains_key(node)
-    }
-
-    pub fn contains_edge(&self, from: &NodeName, to: &NodeName) -> bool {
-        match self.edges.get(from) {
-            None => false,
-            Some(edges_from) => match edges_from.get(to) {
-                None => false,
-                Some(_) => true,
-            },
-        }
-    }
-
-    pub fn add_node(&mut self, name: &NodeName) {
-        if !self.nodes.contains_key(name) {
-            let node = Node {
-                name: *name,
-                height: 0,
-                excess: 0,
-            };
-            self.nodes.insert(*name, node);
-        }
-    }
-
-    pub fn add_edge(&mut self, from: &NodeName, to: &NodeName, capacity: i32, flow: i32) {
-        if self.contains_edge(&from, &to) || from == to {
-            return;
-        }
-
-        let edge = Edge {
-            to: *to,
-            from: *from,
-            capacity,
-            flow,
+impl ScreepsGraph {
+    pub fn new(sources: Vec<Node>, sinks: Vec<Node>, walls: Vec<Node>) -> ScreepsGraph {
+        return ScreepsGraph {
+            sources,
+            sinks,
+            walls,
         };
+    }
 
-        match self.edges.get_mut(&from) {
-            None => {
-                let mut edges_from = HashMap::new();
-                edges_from.insert(*to, edge);
-                self.edges.insert(*from, edges_from);
-            }
-            Some(edges_from) => {
-                edges_from.insert(*to, edge);
-            }
+    /// Get the node at the provided index.
+    /// Returns the first source or sink if the node is part of the source or sink.
+    /// Returns None if the node is a wall.
+    fn get_node(&self, node: Node) -> Option<Node> {
+        if self.sources.contains(&node) {
+            return Some(self.sources[0]);
         }
-    }
-
-    fn get_node(&self, name: &NodeName) -> Option<&Node<NodeName>> {
-        self.nodes.get(name)
-    }
-
-    fn get_mut_node(&mut self, name: &NodeName) -> Option<&mut Node<NodeName>> {
-        self.nodes.get_mut(name)
-    }
-
-    fn get_edge(&self, from: &NodeName, to: &NodeName) -> Option<&Edge<NodeName>> {
-        match self.edges.get(from) {
-            None => None,
-            Some(edges_from) => edges_from.get(to),
+        if self.sinks.contains(&node) {
+            return Some(self.sinks[0]);
         }
-    }
-
-    fn get_mut_edge(&mut self, from: &NodeName, to: &NodeName) -> Option<&mut Edge<NodeName>> {
-        match self.edges.get_mut(from) {
-            None => None,
-            Some(edges_from) => edges_from.get_mut(to),
+        if self.walls.contains(&node) {
+            return None;
         }
+        return Some(node);
     }
 
-    fn get_adjacent_nodes(&self, name: &NodeName) -> Vec<NodeName> {
-        match self.edges.get(name) {
-            None => vec![],
-            Some(edges_from) => edges_from.values().map(|edge| edge.to().clone()).collect(),
+    fn get_surrounding_indices(node: Node) -> Vec<Node> {
+        let mut neighbors = vec![];
+        let node_y = node.div_euclid(50);
+        let node_x = node.rem_euclid(50);
+        let mut y_minus = 1;
+        let mut y_plus = 1;
+        let mut x_minus = 1;
+        let mut x_plus = 1;
+        if node_y == 0 {
+            y_minus = 0;
+        } else if node_y == 49 {
+            y_plus = 0;
         }
-    }
-
-    fn capacity(&self, from: &NodeName, to: &NodeName) -> i32 {
-        match self.get_edge(from, to) {
-            None => 0,
-            Some(edge) => edge.capacity(),
+        if node_x == 0 {
+            x_minus = 0;
+        } else if node_x == 49 {
+            x_plus = 0;
         }
-    }
-
-    fn flow(&self, from: &NodeName, to: &NodeName) -> i32 {
-        match self.get_edge(from, to) {
-            None => 0,
-            Some(edge) => edge.flow(),
-        }
-    }
-
-    pub fn residual_capacity(&self, from: &NodeName, to: &NodeName) -> i32 {
-        return self.capacity(from, to) - self.flow(from, to);
-    }
-
-    fn excess(&self, name: &NodeName) -> i32 {
-        match self.get_node(name) {
-            None => 0,
-            Some(node) => node.excess(),
-        }
-    }
-
-    fn set_edge_flow(&mut self, from: &NodeName, to: &NodeName, flow: i32) {
-        println!("        flow {} -> {} now {}", from, to, flow);
-        match self.get_mut_edge(from, to) {
-            None => {}
-            Some(edge) => edge.set_flow(flow),
-        }
-    }
-
-    fn set_node_excess(&mut self, name: &NodeName, excess: i32) {
-        if let Some(node) = self.get_mut_node(name) {
-            node.set_excess(excess);
-        }
-    }
-
-    fn get_overflowing_node(&self) -> Option<NodeName> {
-        self.nodes
-            .values()
-            .find(|node| {
-                let name = node.name();
-                // The source and sink don't overflow
-                if name == self.sink || name == self.source {
-                    return false;
+        for y in (node_y - y_minus)..=(node_y + y_plus) {
+            for x in (node_x - x_minus)..=(node_x + x_plus) {
+                // Node isn't surrounded by itself
+                if y == node_y && x == node_x {
+                    continue;
                 }
-                if node.excess() > 0 {
-                    // Only return this node if it has a node to overflow to (ignoring height,
-                    // though)
-                    let adjacent_nodes = self.get_adjacent_nodes(&name);
-                    let target = adjacent_nodes.iter().find(|target_name| {
-                        return self.capacity(&name, target_name) > self.flow(&name, target_name);
-                    });
-                    return match target {
-                        None => false,
-                        Some(_) => true,
-                    };
-                }
-                // Node isn't overflowing
-                false
-            })
-            .map(|node| node.name)
-    }
-
-    pub fn max_flow(&self) -> (i32, Graph<NodeName>) {
-        let residual_graph = &mut self.clone();
-        // Add the reverse edges to residual graph if they don't already exist
-        for (from, edges_from) in self.edges.iter() {
-            for (to, _) in edges_from.iter() {
-                // Reverse edges don't exist in the real graph so they have no capacity
-                residual_graph.add_edge(to, from, 0, 0);
+                neighbors.push(x + y * 50);
             }
         }
-        residual_graph.max_flow_initialize();
+        return neighbors;
+    }
 
-        let mut count = 0;
+    fn get_all_surrounding_indices(nodes: &Vec<Node>) -> Vec<Node> {
+        let mut surrounding = vec![];
+        nodes
+            .iter()
+            .for_each(|node| surrounding.append(&mut Self::get_surrounding_indices(*node)));
+        surrounding
+    }
+
+    fn get_neighbors(&self, node: Node) -> Vec<Node> {
+        // If the node is part of the source or sink, or not in the graph, return no neighbors
+        if self.walls.contains(&node) {
+            return vec![];
+        }
+
+        let surrounding;
+        if self.sources.contains(&node) {
+            surrounding = Self::get_all_surrounding_indices(&self.sources);
+        } else if self.sinks.contains(&node) {
+            surrounding = Self::get_all_surrounding_indices(&self.sinks);
+        } else {
+            surrounding = Self::get_surrounding_indices(node);
+        }
+
+        let mut neighbors = vec![];
+        for adjacent in surrounding.iter() {
+            if let Some(neighbor) = self.get_node(*adjacent) {
+                neighbors.push(neighbor);
+            }
+        }
+
+        neighbors
+    }
+
+    /// Create a residual graph through the Push-Relabel max-flow algorithm
+    fn create_residual_graph(&self) -> Flow {
+        // Initialize push-relable max-flow algorithm
+        let source = self.sources[0];
+        let mut capacity: Capacity = [[0; ROOM_SIZE]; ROOM_SIZE];
+        let mut flow: Flow = [[0; ROOM_SIZE]; ROOM_SIZE];
+        let mut excess: Excess = [0; ROOM_SIZE];
+        let mut height: Height = [0; ROOM_SIZE];
+        // Initialize the source (and its neighbors)
+        height[source as usize] =
+            (ROOM_SIZE - self.sources.len() - self.sinks.len() - self.walls.len()) as HeightValue;
+        let neighbors = self.get_neighbors(source);
+        for neighbor in neighbors {
+            let amount = capacity[source as usize][neighbor as usize];
+            flow[source as usize][neighbor as usize] = amount;
+            flow[neighbor as usize][source as usize] = -amount;
+            excess[neighbor as usize] = amount;
+        }
 
         loop {
-            // TODO: This is for debugging
-            if count >= 100 {
-                println!("!!!! TOO MUCH !!!!");
-                break;
-            }
-            count += 1;
-            if let Some(name) = residual_graph.get_overflowing_node() {
-                let node = residual_graph
-                    .get_node(&name)
-                    .expect("Overflowing node doesn't exist");
-                println!("{} overflowing with {}", name, node.excess());
-                let adjacent_nodes = residual_graph.get_adjacent_nodes(&name);
-                let push_target = adjacent_nodes.iter().find(|target_name| {
-                    let target = residual_graph
-                        .get_node(target_name)
-                        .expect("Adjacent node doesn't exist");
-                    if node.height() == 1 + target.height() {
-                        return residual_graph.capacity(&name, target_name)
-                            > residual_graph.flow(&name, target_name);
-                    }
-                    false
+            if let Some(node) = self.max_flow_get_overflowing_node(&excess) {
+                let neighbors = self.get_neighbors(node);
+                let target = neighbors.iter().find(|target| {
+                    let target_index = **target as usize;
+                    height[node as usize] == height[target_index] + 1
+                        && capacity[node as usize][target_index] > flow[node as usize][target_index]
                 });
-                match push_target {
-                    None => {
-                        println!("    relable {}", name);
-                        residual_graph.max_flow_relabel(&name)
+                match target {
+                    Some(target) => {
+                        self.max_flow_push(node, *target, &capacity, &mut excess, &mut flow)
                     }
-                    Some(target) => residual_graph.max_flow_push(&name, target),
+                    None => self.max_flow_relabel(node, &mut height, &capacity, &flow),
                 }
             } else {
                 break;
             }
         }
 
-        println!("done in {}", count);
-
-        let max_flow = residual_graph
-            .get_adjacent_nodes(&residual_graph.source)
-            .iter()
-            .map(|name| residual_graph.flow(&residual_graph.source, name))
-            .sum();
-
-        return (max_flow, residual_graph.clone());
+        /* // Nodes with flow from > 0
+        flow.iter()
+            .enumerate()
+            .filter(|(_, flow_from)| flow_from.iter().sum::<FlowCapacityValue>() > 0)
+            .map(|(node, _)| node as Node)
+            .collect()
+            */
+        flow
     }
 
-    fn max_flow_initialize(&mut self) {
-        // Set the height and excess of every node to 0
-        for (_, node) in self.nodes.iter_mut() {
-            node.set_height(0);
-            node.set_excess(0);
-        }
-
-        // Set the flow along each edge to 0
-        for (_, edges_from) in self.edges.iter_mut() {
-            for (_, edge) in edges_from.iter_mut() {
-                edge.set_flow(0);
-            }
-        }
-
-        // Set the source height to the graph order
-        let source_name = self.source;
-        let order = self.nodes.len() as i32;
-        let source = self
-            .get_mut_node(&source_name)
-            .expect("Graph doesn't contain source");
-        source.set_height(order);
-
-        let adjacent_nodes = self.get_adjacent_nodes(&source_name);
-        for name in adjacent_nodes.iter() {
-            // Add the reverse edge (e.g. edge = u -> v, reverse is v -> u) if it doesn't exist
-            self.add_edge(name, &source_name, 0, 0);
-            let edge_capacity = self.capacity(&source_name, name);
-            self.set_edge_flow(&source_name, name, edge_capacity);
-            self.set_edge_flow(name, &source_name, -edge_capacity);
-            self.set_node_excess(name, self.flow(&source_name, name));
+    fn max_flow_get_overflowing_node(&self, excess: &Excess) -> Option<Node> {
+        if let Some((node, _)) = excess.iter().enumerate().find(|(_, excess)| **excess > 0) {
+            Some(node as Node)
+        } else {
+            None
         }
     }
 
-    fn max_flow_relabel(&mut self, name: &NodeName) {
-        let adjacent_nodes = self.get_adjacent_nodes(name);
-        let base_height = adjacent_nodes
+    fn max_flow_relabel(&self, node: Node, height: &mut Height, capacity: &Capacity, flow: &Flow) {
+        // Get the height of the lowest neighbor with residual capacity
+        let neighbors = self.get_neighbors(node);
+        let base_height = neighbors
             .iter()
-            .filter(|target_name| self.capacity(name, target_name) > self.flow(name, target_name))
-            .map(|node| {
-                self.get_node(node)
-                    .expect("Adjacent node doesn't exist")
-                    .height()
+            .filter(|neighbor| {
+                capacity[node as usize][**neighbor as usize]
+                    > flow[node as usize][**neighbor as usize]
             })
+            .map(|neighbor| height[*neighbor as usize])
             .min()
-            .expect("No adjacent node while relabling");
-        let node = self
-            .get_mut_node(&name)
-            .expect("Node to relabel doesn't exist");
-        node.set_height(base_height + 1);
+            .expect("No neighbors while relabling");
+        // Set the height of node to 1 + its lowest neighbor's height
+        height[node as usize] = base_height + 1;
     }
 
-    fn max_flow_push(&mut self, from: &NodeName, to: &NodeName) {
-        println!(
-            "    push {} {}/{}-> {}",
-            from,
-            self.flow(from, to),
-            self.capacity(from, to),
-            to
+    fn max_flow_push(
+        &self,
+        from: Node,
+        to: Node,
+        capacity: &Capacity,
+        excess: &mut Excess,
+        flow: &mut Flow,
+    ) {
+        let change = std::cmp::min(
+            excess[from as usize],
+            capacity[from as usize][to as usize] - flow[from as usize][to as usize],
         );
-        assert!(self.excess(from) > 0);
-        assert!(self.capacity(from, to) > self.flow(from, to));
-        // The change in flow should be whichever is less: the from node's excess or the remaining
-        // capacity of the edge from -> to
-        let excess = self.excess(from);
-        let remaining_capacity = self.capacity(from, to) - self.flow(from, to);
-        let change = std::cmp::min(excess, remaining_capacity);
-        println!("        pushing {}", change);
-
-        self.set_edge_flow(from, to, self.flow(from, to) + change);
-        self.set_edge_flow(to, from, self.flow(to, from) - change);
-
-        self.set_node_excess(from, self.excess(from) - change);
-        self.set_node_excess(to, self.excess(to) + change);
+        flow[from as usize][to as usize] += change;
+        flow[to as usize][from as usize] -= change;
+        excess[from as usize] -= change;
+        excess[to as usize] += change;
     }
 
-    pub fn min_cut_connected_nodes(&self, start: &NodeName) -> Vec<NodeName> {
-        // First In First Out queue
+    fn min_cut_connected_nodes(&self) -> Vec<Node> {
+        let flow = self.create_residual_graph();
+        // First-in, First-out queue
         let mut queue = VecDeque::new();
-        // Set of discovered nodes
         let mut discovered = HashSet::new();
-        discovered.insert(*start);
-        queue.push_back(*start);
+
+        // Start at the source
+        discovered.insert(self.sources[0]);
+        queue.push_back(self.sources[0]);
+
         while !queue.is_empty() {
             let node = queue.pop_front().expect("Queue unexpectedly empty");
-            let adjacent_nodes = self.get_adjacent_nodes(&node);
-            adjacent_nodes.iter().for_each(|adjacent| {
-                if !discovered.contains(adjacent) && self.residual_capacity(&node, adjacent) > 0 {
-                    discovered.insert(*adjacent);
-                    queue.push_back(*adjacent)
+            let neighbors = self.get_neighbors(node);
+            neighbors.iter().for_each(|neighbor| {
+                if !discovered.contains(neighbor) && flow[node as usize][*neighbor as usize] == 0 {
+                    discovered.insert(*neighbor);
+                    queue.push_back(*neighbor);
                 }
             });
         }
 
-        // TODO: This might be unnecessary based on how the output is used
         return Vec::from_iter(discovered);
     }
-    pub fn min_cut_boundary_nodes(&self, start: &NodeName) -> Vec<NodeName> {
+
+    pub fn min_cut_nodes(&self) -> Vec<Node> {
         let mut boundary = HashSet::new();
-        let connected = self.min_cut_connected_nodes(start);
+        let connected = self.min_cut_connected_nodes();
 
         connected.iter().for_each(|node| {
-            let adjacent_nodes = self.get_adjacent_nodes(node);
-            adjacent_nodes.iter().for_each(|adjacent| {
-                if !connected.contains(adjacent) {
-                    boundary.insert(*adjacent);
+            let neighbors = self.get_neighbors(*node);
+            neighbors.iter().for_each(|neighbor| {
+                if !connected.contains(neighbor) {
+                    boundary.insert(*neighbor);
                 }
             });
         });
@@ -471,236 +244,60 @@ where
         return Vec::from_iter(boundary);
     }
 
-    pub fn get_nodes_with_edges_less_than(&self, count: usize) -> Vec<&NodeName> {
-        self.edges
-            .iter()
-            .filter(|(_, edges_from)| edges_from.len() < count)
-            .map(|(name, _)| name)
-            .collect()
+    pub fn get_outter_nodes(&self) -> Vec<Node> {
+        // A node is an outter node if it has < 8 edges or it connects to the sink (or is the sink)
+        let mut outters = vec![self.sinks[0]];
+        for index in 0..ROOM_SIZE {
+            if let Some(node) = self.get_node(index as Node) {
+                // Sinks (returned from get_node as sinks[0]) are always outter nodes, but the
+                // sink is included by default
+                if node != self.sinks[0] {
+                    let neighbors = self.get_neighbors(node);
+                    if neighbors.contains(&self.sinks[0]) || neighbors.len() < 8 {
+                        outters.push(node);
+                    }
+                }
+            }
+        }
+        return outters;
     }
 
-    pub fn distance_transform(&self, boundaries: &Vec<&NodeName>) -> HashMap<NodeName, usize> {
-        // First In First Out queue
+    pub fn distance_transform(&self, boundaries: &Vec<Node>) -> [u8; ROOM_SIZE] {
+        // First-in, first-out queue
         let mut queue = VecDeque::new();
-        // Set of discovered nodes
         let mut discovered = HashSet::new();
 
         boundaries.iter().for_each(|node| {
-            queue.push_back(**node);
-            discovered.insert(**node);
+            queue.push_back(*node);
+            discovered.insert(*node);
         });
 
         let mut distance = 0;
-        let mut distances: HashMap<NodeName, usize> = HashMap::new();
+        let mut distances = [u8::MAX; ROOM_SIZE];
 
-        // The number of nodes with this distance
         let mut previous_class_size = queue.len();
-        // The number of nodes *added* with this distance
         let mut current_class_size = 0;
 
-        // BFS starting with boundary nodes
         while !queue.is_empty() {
             if current_class_size == previous_class_size {
-                // All the nodes currently in the queue are connected to nodes of the previous
-                // distance, so the class size of the next distance should be the queue length
                 previous_class_size = queue.len();
                 current_class_size = 0;
                 distance += 1;
             }
             let node = queue.pop_front().expect("Queue unexpectedly empty");
-            // Add this nodes distance
-            if !distances.contains_key(&node) {
-                distances.insert(node, distance);
+            if distances[node as usize] == u8::MAX {
+                distances[node as usize] = distance;
                 current_class_size += 1;
             }
-            // Add this nodes adjcacent nodes to the queue
-            let adjacent_nodes = self.get_adjacent_nodes(&node);
-            adjacent_nodes.iter().for_each(|adjacent| {
-                if !discovered.contains(adjacent) {
-                    discovered.insert(*adjacent);
-                    queue.push_back(*adjacent);
+            let neighbors = self.get_neighbors(node);
+            neighbors.iter().for_each(|neighbor| {
+                if !discovered.contains(neighbor) {
+                    discovered.insert(*neighbor);
+                    queue.push_back(*neighbor);
                 }
             });
         }
 
         return distances;
-    }
-
-    pub fn get_all_edges(&self) -> Vec<(NodeName, NodeName)> {
-        let mut edges = Vec::new();
-        for (from, edges_from) in self.edges.iter() {
-            for (to, _) in edges_from.iter() {
-                edges.push((*from, *to));
-            }
-        }
-        edges
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    fn parse_adrianhaarbach_graph(graph: &str) -> Graph<i32> {
-        let mut vertices = -1;
-        let mut edges = Vec::<[i32; 3]>::new();
-        graph.lines().for_each(|line| {
-            if line.starts_with("n") {
-                vertices += 1;
-            } else if line.starts_with("e") {
-                let mut edge: [i32; 3] = [0, 0, 0];
-                let parsed: Vec<i32> = line
-                    .replace("e ", "")
-                    .split_ascii_whitespace()
-                    .map(|part| std::str::FromStr::from_str(part).unwrap())
-                    .collect();
-                edge[0] = parsed[0];
-                edge[1] = parsed[1];
-                edge[2] = parsed[2];
-                edges.push(edge);
-            }
-        });
-        let mut graph = Graph::new(0, vertices);
-        for i in 1..vertices {
-            graph.add_node(&i);
-        }
-        for edge in edges.iter() {
-            // These are directed graphs
-            graph.add_edge(&edge[0], &edge[1], edge[2], 0);
-        }
-        return graph;
-    }
-
-    #[test]
-    fn test_graph_max_flow_empty() {
-        let graph = Graph::new(0, 1);
-        let (max, _) = graph.max_flow();
-        assert_eq!(max, 0);
-    }
-
-    #[test]
-    fn test_graph_max_flow_1() {
-        let graph = parse_adrianhaarbach_graph(
-            "n
-n
-n
-n
-e 0 1 2
-e 0 2 4
-e 1 2 3
-e 2 3 5
-e 1 3 1",
-        );
-        let (max, _) = graph.max_flow();
-        assert_eq!(max, 6);
-    }
-
-    #[test]
-    fn test_graph_max_flow_2() {
-        let graph = parse_adrianhaarbach_graph(
-            "n
-n
-n
-n
-n
-n
-e 0 1 16
-e 0 2 13
-e 1 3 12
-e 2 1 4
-e 2 4 14
-e 3 2 9
-e 3 5 20
-e 4 3 7
-e 4 5 4",
-        );
-        let (max, _) = graph.max_flow();
-        assert_eq!(max, 23);
-    }
-
-    #[test]
-    fn test_graph_max_flow_3() {
-        let graph = parse_adrianhaarbach_graph(
-            "n
-n
-n
-n
-n
-n
-n
-n
-e 3 5 8
-e 3 4 20
-e 4 5 1
-e 2 3 26
-e 1 4 13
-e 1 3 10
-e 0 2 1
-e 0 1 38
-e 1 2 8
-e 4 7 7
-e 5 7 7
-e 3 7 1
-e 6 7 27
-e 3 6 24
-e 0 6 2
-e 4 2 2",
-        );
-        let (max, _) = graph.max_flow();
-        assert_eq!(max, 31);
-    }
-
-    #[test]
-    fn test_graph_get_connected_1() {
-        let graph = parse_adrianhaarbach_graph(
-            "n
-n
-n
-n
-n
-n
-e 0 1 16
-e 0 2 13
-e 1 3 12
-e 2 1 4
-e 2 4 14
-e 3 2 9
-e 3 5 20
-e 4 3 7
-e 4 5 4",
-        );
-        let (_, residual_graph) = graph.max_flow();
-        // Node 0 is the source
-        let mut connected = residual_graph.min_cut_connected_nodes(&0);
-        // For testing, to verify
-        connected.sort();
-        assert_eq!(connected, vec![0, 1, 2, 4]);
-    }
-
-    #[test]
-    fn test_graph_get_connected_2() {
-        let graph = parse_adrianhaarbach_graph(
-            "n
-n
-n
-n
-n
-n
-e 0 1 16
-e 0 2 13
-e 1 3 12
-e 2 1 4
-e 2 4 14
-e 3 2 9
-e 3 5 20
-e 4 3 7
-e 4 5 4",
-        );
-        let (_, residual_graph) = graph.max_flow();
-        // Node 0 is the source
-        let mut connected = residual_graph.min_cut_boundary_nodes(&0);
-        // For testing, to verify
-        connected.sort();
-        assert_eq!(connected, vec![3, 5]);
     }
 }

@@ -1,94 +1,40 @@
-use crate::graph::Graph;
+use crate::graph::Node;
+use crate::graph::ScreepsGraph as Graph;
 use log::*;
 use screeps::objects::Room;
+
+type DistanceTransform = Vec<u8>;
 
 pub fn plan_walls(room: &Room) {
     info!("Planning walls");
     let graph = load_or_get_graph(room);
-    /*
-    let room_visual = room.visual();
-    let mut style: screeps::objects::CircleStyle = Default::default();
-    style = style.radius(0.5).fill("#000000");
-
-    wall_spots.iter().for_each(|spot| {
-        let x = spot % 50;
-        let y = spot.div_euclid(50);
-        room_visual.circle(x as f32, y as f32, Some(style.clone()));
-    });
-    */
-    // show_distance_transform(room, &graph);
+    show_distance_transform(room, &graph);
+    show_boundary_walls(room, &graph);
 }
 
-fn terrain_to_graph(room: &Room, sources: &Vec<u32>, sinks: &Vec<u32>) -> Graph<u32> {
-    let mut tiles = Vec::new();
+fn terrain_to_graph(room: &Room, sources: &Vec<Node>, sinks: &Vec<Node>) -> Graph {
+    let mut walls = Vec::new();
     let terrain = room.get_terrain().get_raw_buffer();
     for (i, tile_type) in terrain.iter().enumerate() {
         // tile is a wall if tile_type & TERRAIN_MASK_WALL is 1u8
-        if !(tile_type & screeps::constants::TERRAIN_MASK_WALL == 1) {
-            tiles.push(i as u32);
+        if tile_type & screeps::constants::TERRAIN_MASK_WALL == 1 {
+            walls.push(i as Node);
         }
     }
-    let source = sources[0];
-    let sink = sinks[0];
-    let mut graph = Graph::new(source, sink);
-    let mut added = 0;
-    tiles.iter().for_each(|tile| {
-        if !sources.contains(tile) && !sinks.contains(tile) {
-            graph.add_node(tile);
-            added += 1;
-        }
-    });
-    info!("added {} tiles", added);
-    let mut sink_count = 0;
-    tiles.iter().for_each(|tile| {
-        if !sources.contains(tile) && !sinks.contains(tile) {
-            let (tile_x, tile_y) = (tile % 50, tile.div_euclid(50));
-            let y_range = if tile_y == 0 {
-                0..=1
-            } else if tile_y == 49 {
-                48..=49
-            } else {
-                (tile_y - 1)..=(tile_y + 1)
-            };
-            for y in y_range {
-                let x_range = if tile_x == 0 {
-                    0..=1
-                } else if tile_x == 49 {
-                    48..=49
-                } else {
-                    (tile_x - 1)..=(tile_x + 1)
-                };
-                for x in x_range {
-                    let neighbor = y * 50 + x;
-                    if !tiles.contains(&neighbor) {
-                        // If neighbor is a wall tile, go to the next neighbor
-                        continue;
-                    }
-                    // Note: duplicate edges won't be added by graph.add_edge
-                    if sources.contains(&neighbor) {
-                        // Edge from tile -> source with capacity 1 and 0 flow
-                        graph.add_edge(tile, &source, 1, 0);
-                        // Add reverse edge now since neighbor isn't in the graph
-                        graph.add_edge(&source, tile, 1, 0);
-                    } else if sinks.contains(&neighbor) {
-                        sink_count += 1;
-                        // Edge from tile -> sink with capacity 1 and 0 flow
-                        graph.add_edge(tile, &sink, 1, 0);
-                        // Add reverse edge now since neighbor isn't in the graph
-                        graph.add_edge(&sink, tile, 1, 0);
-                    } else if graph.contains_node(&neighbor) {
-                        // Edge from tile -> neighbor with capacity 1 and 0 flow
-                        graph.add_edge(tile, &neighbor, 1, 0);
-                    }
-                }
-            }
-        }
-    });
-    info!("Added {} sinks", sink_count);
-    return graph;
+    let sinks_without_walls = sinks
+        .iter()
+        .filter(|sink| !walls.contains(sink))
+        .map(|sink| *sink)
+        .collect();
+    let sources_without_walls = sources
+        .iter()
+        .filter(|source| !walls.contains(source))
+        .map(|source| *source)
+        .collect();
+    Graph::new(sources_without_walls, sinks_without_walls, walls)
 }
 
-fn load_or_get_graph(room: &Room) -> Graph<u32> {
+fn load_or_get_graph(room: &Room) -> Graph {
     let protected = vec![18 + 12 * 50];
     match load_graph(room) {
         None => get_graph_and_save(room, &protected),
@@ -96,18 +42,20 @@ fn load_or_get_graph(room: &Room) -> Graph<u32> {
     }
 }
 
-fn get_graph_and_save(room: &Room, protected: &Vec<u32>) -> Graph<u32> {
+fn get_graph_and_save(room: &Room, protected: &Vec<Node>) -> Graph {
     info!("Creating graph");
     // Get the exists in the room
     let mut sinks = Vec::new();
     room.find(screeps::constants::find::EXIT)
         .iter()
-        .map(|position| (position.y() * 50 + position.x()) as u32)
+        .map(|position| (position.y() * 50 + position.x()) as Node)
         .for_each(|exit| {
             surrounding_pos_indices(exit)
                 .iter()
                 .for_each(|position| sinks.push(*position))
         });
+    sinks.sort();
+    sinks.dedup();
     // Create the graph
     let graph = terrain_to_graph(room, protected, &sinks);
 
@@ -117,55 +65,25 @@ fn get_graph_and_save(room: &Room, protected: &Vec<u32>) -> Graph<u32> {
     graph
 }
 
-fn save_graph(room: &Room, graph: &Graph<u32>) {
-    let room_mem = room.memory(); /*
-                                  let source_sink = vec![(graph.source(), graph.sink())];
-                                  let graph_vec = source_sink
-                                      .iter()
-                                      .chain(graph.get_all_edges().iter())
-                                      .map(|(from, to)| vec![*from as u32, *to as u32])
-                                      .collect::<Vec<Vec<u32>>>();*/
+fn save_graph(room: &Room, graph: &Graph) {
+    let room_mem = room.memory();
     room_mem.set("graph", graph);
 }
 
-fn load_graph(room: &Room) -> Option<Graph<u32>> {
+fn load_graph(room: &Room) -> Option<Graph> {
     info!("Loading graph...");
     let room_mem = room.memory();
-    info!("room_mem");
-    let get_graph = room_mem.get::<Graph<u32>>("graph");
-    info!("got get_graph");
+    let get_graph = room_mem.get::<Graph>("graph");
     match get_graph {
-        Ok(graph_option) => {
-            info!("Okay");
-            match graph_option {
-                None => return None,
-                Some(graph) => {
-                    info!("Somewhat loaded graph");
-                    /*
-                    let mut edges: Vec<(usize, usize)> =
-                        edges_memory.iter().map(|edge| (edge[0], edge[1])).collect();
-                    let (source, sink) = edges.remove(0);
-                    let mut graph = Graph::new(source, sink);
-                    for (from, to) in edges {
-                        // add_node won't add duplicate nodes
-                        graph.add_node(&from);
-                        graph.add_node(&to);
-                        // Add edge from -> to with capacity 1 and flow 0
-                        graph.add_edge(&from, &to, 1, 0);
-                    }*/
-                    Some(graph)
-                }
-            }
-        }
-        Err(error) => {
-            info!("Err");
-            info!("{:?}", error);
-            None
-        }
+        Ok(graph_option) => match graph_option {
+            None => return None,
+            Some(graph) => Some(graph),
+        },
+        Err(error) => None,
     }
 }
 
-fn rectangle_of_pos_indices(top_left: u32, bottom_right: u32) -> Vec<u32> {
+fn rectangle_of_pos_indices(top_left: Node, bottom_right: Node) -> Vec<Node> {
     let mut positions = Vec::new();
 
     for y in top_left.div_euclid(50)..=bottom_right.div_euclid(50) {
@@ -180,7 +98,7 @@ fn rectangle_of_pos_indices(top_left: u32, bottom_right: u32) -> Vec<u32> {
     positions
 }
 
-fn surrounding_pos_indices(index: u32) -> Vec<u32> {
+fn surrounding_pos_indices(index: Node) -> Vec<Node> {
     // 51 = 50 * 1 + 1
     let mut x_minus = 1;
     let mut x_plus = 1;
@@ -192,33 +110,39 @@ fn surrounding_pos_indices(index: u32) -> Vec<u32> {
     return rectangle_of_pos_indices(index - 50 - x_minus, index + 50 + x_plus);
 }
 
-fn get_distance_transform(graph: &Graph<u32>) -> Vec<u32> {
-    let boundaries = graph.get_nodes_with_edges_less_than(8);
-    let distance_map = graph.distance_transform(&boundaries);
-    let mut distances = Vec::new();
-    // 2500 = 50*50 which is the room size
-    distances.resize(2500, u32::MAX);
-    distance_map.iter().for_each(|(name, distance)| {
-        distances[*name as usize] = *distance as u32;
-    });
-    distances
-}
-
-fn save_distance_transform(room: &Room, distances: &Vec<u32>) {
-    room.memory().set(
-        "distance_transform",
-        distances
-            .iter()
-            .map(|spot| *spot as u32)
-            .collect::<Vec<u32>>(),
+fn get_distance_transform(graph: &Graph) -> DistanceTransform {
+    let boundaries = graph.get_outter_nodes();
+    info!("boundaries: {}", boundaries.len());
+    info!(
+        "bound contains (13,6) {}",
+        boundaries.contains(&(13 + 6 * 50))
     );
+    info!(
+        "bound contains (30,33) {}",
+        boundaries.contains(&(30 + 33 * 50))
+    );
+    info!(
+        "bound contains (31,33) {}",
+        boundaries.contains(&(31 + 33 * 50))
+    );
+    info!(
+        "bound contains (47,23) {}",
+        boundaries.contains(&(47 + 23 * 50))
+    );
+    graph.distance_transform(&boundaries).to_vec()
 }
 
-fn load_distance_transform(room: &Room) -> Option<Vec<u32>> {
-    room.memory().get::<Vec<u32>>("distance_transform").unwrap()
+fn save_distance_transform(room: &Room, distances: &DistanceTransform) {
+    room.memory().set("distance_transform", distances);
 }
 
-fn show_distance_transform(room: &Room, graph: &Graph<u32>) {
+fn load_distance_transform(room: &Room) -> Option<DistanceTransform> {
+    room.memory()
+        .get::<DistanceTransform>("distance_transform")
+        .unwrap()
+}
+
+fn show_distance_transform(room: &Room, graph: &Graph) {
     let distance_transform = match load_distance_transform(room) {
         None => {
             info!("Creating distance transform");
@@ -234,15 +158,14 @@ fn show_distance_transform(room: &Room, graph: &Graph<u32>) {
         "#ff0000", "#00ff00", "#a0a0ff", "#ffff00", "#00ffff", "#ff00ff",
     ];
 
-    /*
     distance_transform
         .iter()
         .enumerate()
         .for_each(|(i, distance)| {
             if *distance < 50 {
                 let mut style = style.clone();
-                if *distance < colors.len() {
-                    style = style.color(colors[*distance]);
+                if (*distance as usize) < colors.len() {
+                    style = style.color(colors[*distance as usize]);
                 }
                 let x = i % 50;
                 let y = i.div_euclid(50);
@@ -253,5 +176,38 @@ fn show_distance_transform(room: &Room, graph: &Graph<u32>) {
                     Some(style),
                 );
             }
-        });*/
+        });
+}
+
+fn get_boundary_walls(room: &Room, graph: &Graph) -> Vec<Node> {
+    info!("Creating boundary walls");
+    let boundaries = graph.min_cut_nodes();
+    save_boundary_walls(room, &boundaries);
+    boundaries
+}
+
+fn save_boundary_walls(room: &Room, boundaries: &Vec<Node>) {
+    info!("Saving boundaries");
+    let room_mem = room.memory();
+    room_mem.set("boundary_walls", boundaries);
+}
+
+fn get_or_load_boundary_walls(room: &Room, graph: &Graph) -> Vec<Node> {
+    info!("Loading boundaries");
+    let room_mem = room.memory();
+    match room_mem.get::<Vec<Node>>("boundary_walls").unwrap() {
+        None => get_boundary_walls(room, graph),
+        Some(boundaries) => boundaries,
+    }
+}
+
+fn show_boundary_walls(room: &Room, graph: &Graph) {
+    let boundaries = get_or_load_boundary_walls(room, graph);
+    let room_visual = room.visual();
+
+    boundaries.iter().for_each(|wall| {
+        let x = wall % 50;
+        let y = wall.div_euclid(50);
+        room_visual.circle(x as f32, y as f32, None);
+    });
 }

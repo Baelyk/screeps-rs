@@ -37,6 +37,7 @@ fn main() {
 }
 
 fn game_loop() {
+    info!("tick: {}", screeps::game::time());
     debug!("loop starting! CPU: {}", screeps::game::cpu::get_used());
     planner::plan_walls(&screeps::game::rooms::values()[0]);
 
